@@ -1,18 +1,6 @@
 module TestExtra
 using Base.Test
 
-
-# Nice output for
-# - local
-# - travis
-# - appveyor
-# - circleci
-
-# Line numbers should correspond to the error location!
-# - https://github.com/JuliaLang/julia/issues/23987#issuecomment-334164560
-# - provide a link?
-
-
 export runtests
 
 
@@ -28,27 +16,39 @@ function testnworkers()
     end
 end
 
-
-
-function runtests(tests::AbstractVector, nworkers::Int=testnworkers())
-    @sync for p in 1:nworkers
-        @async while !isempty(tests)
-            test = shift!(tests)
-            pid = addprocs(1)[1]
-            try
-                remotecall_fetch(Main.eval, pid, :(using Base.Test))
-                remotecall_fetch(Main.eval, pid, quote
-                                 @testset $test begin
-                                     include($test)
-                                 end
-                                 end)
-            finally
-                rmprocs(pid)
+function runtests(tests::AbstractVector, nworkers::Int=testnworkers(); verbose=true)
+    verbose && println("Testing with $nworkers workers")
+    @testset "TOTAL" begin
+        mts = Base.Test.get_testset()
+        @sync for p in 1:nworkers
+            @async while !isempty(tests)
+                Base.Test.push_testset(mts)
+                test = shift!(tests)
+                verbose && println("Running $test")
+                pid = addprocs(1)[1]
+                try
+                    remotecall_fetch(Main.eval, pid, :(using Base.Test))
+                    rts = remotecall_fetch(Main.eval, pid, quote
+                                     ts = Base.Test.DefaultTestSet($test)
+                                     Base.Test.push_testset(ts)
+                                     Base.Test.get_testset()
+                                     try
+                                         include($test)
+                                     catch err
+                                         Base.Test.record(ts, Error(:nontest_error, :(), err, Base.Test.catch_backtrace()))
+                                     end
+                                     Base.Test.pop_testset()
+                                     ts
+                    end)
+                    Base.Test.finish(rts)
+                finally
+                    rmprocs(pid)
+                end
             end
         end
     end
 end
 
-runtests(nworkers::Int=testnworkers()) = runtests(testfiles(), nworkers)
+runtests(nworkers::Int=testnworkers(); kwargs...) = runtests(testfiles(), nworkers; kwargs...)
 
 end # module
